@@ -30,7 +30,7 @@ nlp = spacy.load('en')
 # from pythonrouge.pythonrouge import Pythonrouge
 
 # root directories
-base_dir = "/home/archive/ssharpe/development/hs2s/data/"
+base_dir = "../data/"
 raw_dir = base_dir + "raw/"
 interim_dir = base_dir + "interim/"
 processed_dir = base_dir + "processed/"
