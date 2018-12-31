@@ -16,7 +16,7 @@ import spacy
 nlp = spacy.load('en')  
 
 # root directories
-base_dir = "/project/flyeye/sharpe/hs2s/data/"
+base_dir = "../data/"
 output_dir = base_dir + "interim/"
 
 # source data
@@ -40,7 +40,7 @@ import spacy
 nlp = spacy.load('en')  
 
 # root directories
-base_dir = "/project/flyeye/sharpe/hs2s/data/"
+base_dir = "../data/"
 output_dir = base_dir + "interim/"
 
 # source data
