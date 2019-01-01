@@ -47,9 +47,9 @@ tf.app.flags.DEFINE_boolean("compute_entropy", False, "compute sequence entropy 
 
 FLAGS = tf.app.flags.FLAGS
 
-# max_data = 50000 # if 0 then no max
 inpt =  {'sen': 10, 'word': 40} # text 10 sen, 40 words per sen  
 otpt =  {'sen': 5, 'word': 8} # category 5 sen, 8 words per sen
+
 model_size = {'in': inpt, 'out': otpt}
 
 processed_data_path = FLAGS.data_dir + '/processed/book_review_data.json'
@@ -248,57 +248,68 @@ def decode(interactive=False):
 
       
 def self_test():
-  test_inpt =  {'sen': 3, 'word': 4}  
-  test_otpt =  {'sen': 4, 'word': 4}  
-  test_model_size = {'in': test_inpt, 'out': test_otpt}
-  batch_size = 3
+  e_size =  {'h1': 3, # encoder level 1
+             'h2': 2} # encoder level 2
+  
+  d_size =  {'h1': 3, # decoder level 1
+             'h2': 2}# decoder level 2
+  
+  model_size = {'encoder': e_size, 'decoder': d_size}
   
   with tf.Session() as sess:
     model = hs2s_model.HS2S(
-      source_vocab_size=11, target_vocab_size=11,
-      model_size=test_model_size,
-      lstm_size=100, num_layers=3, dropout=1,
-      max_gradient_norm=5, batch_size=batch_size,
-      learning_rate=0.2, learning_rate_decay_factor=0.99,
+      source_vocab_size=10,
+      target_vocab_size=10,
+      model_size=model_size,
+      lstm_size=10,
+      num_layers=4,
+      dropout=0.7,
+      max_gradient_norm=5,
+      batch_size=7,
+      learning_rate=0.1,
+      learning_rate_decay_factor=0.99,
       num_samples=0)
 
     sess.run(tf.initialize_all_variables())
     
-    data_set =  [[[[5, 6, 7],[7, 6, 5]], [[7, 6, 5],[5, 6, 7]]],
-                 [[[6, 7, 8],[8, 7, 6]], [[8, 7, 6],[6, 7, 8]]],
-                 [[[7, 8, 9],[9, 8, 7]], [[9, 8, 7],[7, 7, 9]]]]
-
-    encoder_inputs_raw = [x[0] for x in data_set]
-    decoder_inputs_raw = [x[1] for x in data_set]
+    data_set ={
+      '1': [([1, 2, 3],[3, 2, 1]),   # input
+            ([3, 2, 1],[1, 2, 3])],  # target
+      '2': [([2, 3, 4],[4, 3, 2]),   # input
+            ([4, 3, 2],[2, 3, 4])],  # target
+      '3': [([3, 4, 5],[5, 4, 3]),   # input
+            ([5, 4, 3],[3, 4, 5])],  # target
+      '4': [([4, 5, 6],[6, 5, 4]),   # input
+            ([6, 5, 4],[4, 5, 6])],  # target
+      '5': [([5, 6, 7],[7, 6, 5]),   # input
+            ([7, 6, 5],[5, 6, 7])],  # target
+      '6': [([6, 7, 8],[8, 7, 6]),   # input
+            ([8, 7, 6],[6, 7, 8])],  # target
+      '7': [([7, 8, 9],[9, 8, 7]),   # input
+            ([9, 8, 7],[7, 8, 9])],  # target
+    } 
+    encoder_inputs_raw = [v[0] for k,v in list(data_set.items())]
+    decoder_inputs_raw = [v[1] for k,v in list(data_set.items())]
     batch = encoder_inputs_raw, decoder_inputs_raw
 
-    # Train the fake model for 1000 steps.
+    # Train the test model for 20000 steps
     step_time, loss = 0.0, 0.0
-    for k in range(1000):
+    for k in range(20000):
       start_time = time.time()
-      input_data, target_data, target_weights = model.get_batch(batch)
-      step_loss, _ = model.step(sess, input_data, target_data, target_weights, False)
+      input_data, target_data, target_weights = model.get_batch(batch, self_test=True)
+      # step_loss, step_attn, step_logits
+      step_loss = model.step(
+        sess, input_data, target_data, target_weights, False)
       step_time += (time.time() - start_time) / FLAGS.steps_per_checkpoint
       loss += step_loss / FLAGS.steps_per_checkpoint
-      if k % 50 == 0:
-        perplexity = math.exp(loss) if loss < 300 else float('inf')
-        print ("\nglobal step %d learning rate %.4f step-time %.2f" 
-               % (model.global_step.eval(), model.learning_rate.eval(), step_time))
-        print ("  train perplexity %.2f" % perplexity)
-        print ("  train cost %.10f" % loss)
-        logits_ff, _ = model.step(sess, input_data, target_data, target_weights, 
+      if k % 100 == 0:
+        loss, attn, logits = model.step(sess, input_data, target_data, target_weights, 
                                   forward_only=True)
-        for i in range(batch_size):
-          print('\nbatch: %s' % k)
-          input_sample = np.array(input_data)[:,i]
-          target_sample = np.array(target_data)[:,i]
-          logit_sample = np.array(logits_ff)[:,i,:]
-          print('in:   %s' % np.array(list(reversed(input_sample))))
-          print('targ: %s' % np.array(target_sample[4:]))
-          outputs = [int(np.argmax(logit)) for logit in logit_sample]
-          print('out:  %s' % np.array(outputs))
-          print('\n')
-        
+        preds = np.array([l.argmax(axis=1) for l in logits])
+        print('\nstep {} loss: {}'.format(k, loss))        
+        print('input:\n{}'.format(np.array(input_data)))
+        print('target:\n{}'.format(np.array(target_data)[3:,:]))        
+        print('output:\n{}\n'.format(preds))
 
 def main(_):
   if FLAGS.self_test:

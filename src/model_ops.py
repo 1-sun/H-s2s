@@ -10,12 +10,11 @@ from tensorflow.python.ops import embedding_ops
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import nn_ops
 from tensorflow.python.ops import rnn
-# from tensorflow.python.ops import rnn_cell_impl
-# from tensorflow.contrib.rnn.python.ops import core_rnn_cell_impl
+
 # from tensorflow.contrib.rnn.python.ops.core_rnn_cell_impl import _linear as linear
 # from tensorflow.contrib.rnn.python.ops.rnn_cell import _Linear as linear
-from tensorflow.contrib.rnn.python.ops import core_rnn_cell
-linear = core_rnn_cell._linear
+from tensorflow.contrib.rnn.python.ops import core_rnn_cell as rnn_cell
+linear = rnn_cell._linear
 
 
 from tensorflow.python.ops import variable_scope
@@ -62,18 +61,17 @@ def attn_decoder(decoder_inputs, attention_states, encoder_state,
                  initial_state_attention=False, output_size=None, 
                  attention=True, scope=None):
 
-  if not attention: None
-    #decoder()
-
-  # NEED CHANGE  
-  num_encoder_sen = model_size['in']['sen'] 
-  num_decoder_sen = model_size['out']['sen']
-  num_encoder_word = model_size['in']['word']  
-  num_decoder_word = model_size['out']['word']  
-
+  # encoder size
+  num_encoder_word = model_size['encoder']['h1']    
+  num_encoder_sen = model_size['encoder']['h2'] 
+  # decoder size 
+  num_decoder_word = model_size['decoder']['h1']  
+  num_decoder_sen = model_size['decoder']['h2']
+  
   outputs, attn_outputs = [],[]
+
   if output_size is None:
-    output_size = cells["word_decoder"].output_size
+    output_size = cells["decoder_h1"].output_size
 
   with variable_scope.variable_scope(scope or "attention_decoder"):
     batch_size = array_ops.shape(decoder_inputs[0])[0]  # Needed for reshaping.
@@ -138,7 +136,7 @@ def attn_decoder(decoder_inputs, attention_states, encoder_state,
 
       with tf.variable_scope(scope or "decode_words"):
         word_input, word_output = None, None
-        word_state = cells["word_decoder"].zero_state(batch_size, tf.float32)
+        word_state = cells["decoder_h1"].zero_state(batch_size, tf.float32)
 
         for t in range(num_decoder_word):
           if t > 0: variable_scope.get_variable_scope().reuse_variables()
@@ -153,7 +151,7 @@ def attn_decoder(decoder_inputs, attention_states, encoder_state,
             decoder_word_idx += 1
 
           x = linear([word_input] + attns, output_size, True)
-          word_output, word_state = cells["word_decoder"](x, word_state)
+          word_output, word_state = cells["decoder_h1"](x, word_state)
           
           if not i and initial_state_attention:
             with variable_scope.variable_scope(
@@ -170,7 +168,7 @@ def attn_decoder(decoder_inputs, attention_states, encoder_state,
           if loop_function is not None:
             prev = word_output
 
-      _, sen_state = cells["sen_decoder"](word_output, sen_state)
+      _, sen_state = cells["decoder_h2"](word_output, sen_state)
 
   return outputs, sen_state, attn_outputs
 
@@ -183,7 +181,7 @@ def embed_attn_decoder(decoder_inputs, attention_states, encoder_state,
                        dtype=dtypes.float32):
 
   if output_size is None:
-    output_size = cells["word_decoder"].output_size
+    output_size = cells["decoder_h1"].output_size
 
   if output_projection is not None:
     proj_biases = ops.convert_to_tensor(output_projection[1], dtype=dtype)
@@ -209,36 +207,36 @@ def embed_attn_decoder(decoder_inputs, attention_states, encoder_state,
 def encoder(encoder_inputs, lstm_size, cells, model_size,
             batch_size, embedding_size, num_symbols, dtype, scope):
 
-  inpt = model_size['in']
-  num_encoder_sen = inpt['sen']
-  num_encoder_word = inpt['word']
-  embedding_cell = tf.contrib.rnn.EmbeddingWrapper(cells["word_encoder"], 
+  inpt = model_size['encoder']
+  esize_h1 = inpt['h1']  
+  esize_h2 = inpt['h2']
+  embedding_cell = tf.contrib.rnn.EmbeddingWrapper(cells["encoder_h1"], 
                                              embedding_classes=num_symbols,
                                              embedding_size=embedding_size)
 
-  # Encode the words
-  with variable_scope.variable_scope(scope or "word_encoder"):
-    word_outputs = []
-    word_state = embedding_cell.zero_state(batch_size, tf.float32)
+  # Encode the first tier (words)
+  with variable_scope.variable_scope(scope or "encoder_h1"):
+    h1_outputs = []
+    h1_state = embedding_cell.zero_state(batch_size, tf.float32)
     t = 0
-    for s in range(num_encoder_sen):
-      for w in range(num_encoder_word):
+    for s in range(esize_h2):
+      for w in range(esize_h1):
         if t > 0: tf.get_variable_scope().reuse_variables()
-        ht_w, word_state = embedding_cell(encoder_inputs[t], word_state)
-        word_outputs.append(ht_w)
+        ht_w, h1_state = embedding_cell(encoder_inputs[t], h1_state)
+        h1_outputs.append(ht_w)
     t += 1
     output_size = embedding_cell.output_size
-    top_states = [array_ops.reshape(e, [-1, 1, output_size]) for e in word_outputs]
+    top_states = [array_ops.reshape(e, [-1, 1, output_size]) for e in h1_outputs]
     attention_states = array_ops.concat(top_states, 1)
 
-  # Encode the sentences
-  with variable_scope.variable_scope(scope or "sen_encoder"):
-    sen_state = cells["sen_encoder"].zero_state(batch_size, tf.float32)
-    for t in range(num_encoder_sen):
+  # Encode the second tier (sentences)
+  with variable_scope.variable_scope(scope or "encoder_h2"):
+    h2_state = cells["encoder_h2"].zero_state(batch_size, tf.float32)
+    for t in range(esize_h2):
       if t > 0: tf.get_variable_scope().reuse_variables()      
-      _, sen_state = cells["sen_encoder"](word_outputs[t], sen_state)
+      _, h2_state = cells["encoder_h2"](h1_outputs[t], h2_state)
 
-  return sen_state, attention_states
+  return h2_state, attention_states
 
 
 def hs2s(encoder_inputs, decoder_inputs, lstm_size, cells,
@@ -254,7 +252,7 @@ def hs2s(encoder_inputs, decoder_inputs, lstm_size, cells,
   # run decoder
   output_size = None
   if output_projection is None:
-      cell = rnn_cell.OutputProjectionWrapper(cells['word_decoder'], num_decoder_symbols)
+      cell = rnn_cell.OutputProjectionWrapper(cells['decoder_h1'], num_decoder_symbols)
       output_size = num_decoder_symbols
 
   if isinstance(feed_previous, bool):
@@ -269,8 +267,7 @@ def hs2s(encoder_inputs, decoder_inputs, lstm_size, cells,
                                         initial_state_attention=initial_state_attention)
     return outputs, decoder_state, attns
 
-  # If feed_previous is a Tensor, we construct 2 graphs and use cond.
-  # This is wierd, whole thing to use feed forward mode (words based on prev)
+  # If feed_previous is a Tensor, construct 2 graphs and use cond.
   def decoder(feed_previous_bool):
     reuse = None if feed_previous_bool else True
     with variable_scope.variable_scope(variable_scope.get_variable_scope(), reuse=reuse):

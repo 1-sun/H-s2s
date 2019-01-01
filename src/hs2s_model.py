@@ -42,7 +42,7 @@ class HS2S(object):
       return cell
 
     self.cells = dict.fromkeys(
-      ['word_encoder','sen_encoder','word_decoder','sen_decoder'], lstm_cell())
+      ['encoder_h1','encoder_h2','decoder_h1','decoder_h2'], lstm_cell())
 
      # If we use sampled softmax, we need an output projection.
     output_projection = None
@@ -93,30 +93,29 @@ class HS2S(object):
     self.target_weights = []
 
     # input document sizes
-    self.inpt = self.model_size['in']
-    self.otpt = self.model_size['out']
-    self.num_encoder_sen = self.inpt['sen']
-    self.num_encoder_word = self.inpt['word']
-    self.encoder_size = self.num_encoder_sen * self.num_encoder_word
+    self.inpt = self.model_size['encoder']
+    self.encoder_h1 = self.inpt['h1']    
+    self.encoder_h2 = self.inpt['h2']
+    self.encoder_size = self.encoder_h1 * self.encoder_h2
 
     # output document sizes
-    self.num_decoder_sen = self.otpt['sen']
-    self.num_decoder_word = self.otpt['word'] 
-    self.decoder_size = self.num_decoder_sen * self.num_decoder_word
+    self.otpt = self.model_size['decoder']    
+    self.decoder_h1 = self.otpt['h1']
+    self.decoder_h2 = self.otpt['h2'] 
+    self.decoder_size = self.decoder_h1 * self.decoder_h2
     
     # create tensors
     for i in range(self.encoder_size):
       self.encoder_inputs.append(
           tf.placeholder(tf.int32, shape=[None],name="encoder{0}".format(i)))
-
-    for i in range(self.decoder_size + self.num_decoder_word):
+    for i in range(self.decoder_size + self.decoder_h1):
       self.decoder_inputs.append(
         tf.placeholder(tf.int32, shape=[None], name="decoder{0}".format(i)))
       self.target_weights.append(
         tf.placeholder(tf.float32, shape=[None], name="weight{0}".format(i)))
     
     # targets are decoder inputs shifted by one sentence.
-    targets = [self.decoder_inputs[i + self.num_decoder_word]
+    targets = [self.decoder_inputs[i + self.decoder_h1]
                for i in range(self.decoder_size)]
 
 
@@ -158,16 +157,15 @@ class HS2S(object):
 
     # Input feed: input data, target data, target_weights
     input_feed = {}  
-
     for l in range(len(encoder_inputs)):
       input_feed[self.encoder_inputs[l].name] = encoder_inputs[l]
-
     for l in range(len(decoder_inputs)):
       input_feed[self.decoder_inputs[l].name] = decoder_inputs[l]
+    for l in range(len(target_weights)):
       input_feed[self.target_weights[l].name] = target_weights[l]
 
     # # Since our targets are decoder inputs shifted by one sentence, we need one more.
-    for i in range(self.num_decoder_word):
+    for i in range(self.decoder_h1):
       last_target = self.decoder_inputs[self.decoder_size + i].name
       input_feed[last_target] = np.zeros([self.batch_size], dtype=np.int32)
 
@@ -186,58 +184,65 @@ class HS2S(object):
     else:
       return outputs[0], outputs[1], outputs[2:]
 
-  def get_batch(self, batch, reverse_input=False, print_batch=False):
+  def get_batch(self, batch, reverse_input=False, print_batch=False, self_test=False):
     encoder_inputs, decoder_inputs = [],[]
-     
-    encoder_inputs_raw, decoder_inputs_raw = zip(*batch)
-    encoder_inputs_raw = [[[x[1] for x in y] for y in z] for z in encoder_inputs_raw]
-    decoder_inputs_raw = [[[x[1] for x in y if x[1] < 3878] for y in z] for z in decoder_inputs_raw]
+
+    if self_test:
+      encoder_inputs_raw, decoder_inputs_raw = batch
+      encoder_inputs = encoder_inputs_raw
+      # the decoder input needs an initializer "go" symbol
+      decoder_inputs = [([0,0,0],h1,h2) for h1,h2 in decoder_inputs_raw]
+    else:
+      encoder_inputs_raw, decoder_inputs_raw = zip(*batch)
+      encoder_inputs_raw = [[[x[1] for x in y] for y in z] for z in encoder_inputs_raw]
+      decoder_inputs_raw = [[[x[1] for x in y if x[1] < 3878] for y in z] for z in decoder_inputs_raw]
     
-    # Reverse if reverse_input=True, and pad source document
-    encoder_empty_sen = [data_ops.PAD_ID] * self.num_encoder_word
+      # Reverse if reverse_input=True, and pad source document
+      encoder_empty_sen = [data_ops.PAD_ID] * self.num_encoder_word
 
 
-    for i, doc in enumerate(encoder_inputs_raw):
-      encoder_doc = []
-      num_encoder_raw_sen = len(doc)
-      num_encoder_pad = self.num_encoder_sen - num_encoder_raw_sen    
-      for encoder_sen in list(doc):
-        if len(encoder_sen) > self.num_encoder_word:
-          encoder_sen = encoder_sen[:self.num_encoder_word]
-        encoder_pad = [data_ops.PAD_ID] * (self.num_encoder_word - len(encoder_sen))
-        encoder_sen += encoder_pad
+      for i, doc in enumerate(encoder_inputs_raw):
+        encoder_doc = []
+        num_encoder_raw_sen = len(doc)
+        num_encoder_pad = self.num_encoder_sen - num_encoder_raw_sen    
+        for encoder_sen in list(doc):
+          if len(encoder_sen) > self.num_encoder_word:
+            encoder_sen = encoder_sen[:self.num_encoder_word]
+          encoder_pad = [data_ops.PAD_ID] * (self.num_encoder_word - len(encoder_sen))
+          encoder_sen += encoder_pad
+          if reverse_input:
+            encoder_sen = list(reversed(encoder_sen))
+          encoder_doc.append(encoder_sen)
+        for _ in range(num_encoder_pad):
+          encoder_doc.append(encoder_empty_sen)
         if reverse_input:
-          encoder_sen = list(reversed(encoder_sen))
-        encoder_doc.append(encoder_sen)
-      for _ in range(num_encoder_pad):
-        encoder_doc.append(encoder_empty_sen)
-      if reverse_input:
-        encoder_doc = list(reversed(encoder_doc))
-      encoder_inputs.append(encoder_doc)
-      
-    # Pad target document
-    decoder_empty_sen = [data_ops.PAD_ID] * self.num_decoder_word
+          encoder_doc = list(reversed(encoder_doc))
+        encoder_inputs.append(encoder_doc)
 
-    for idx, doc in enumerate(decoder_inputs_raw):
-      decoder_doc = []
-      num_decoder_raw_sen = len(doc)
-      num_decoder_pad = self.num_decoder_sen - num_decoder_raw_sen
+      # Pad target document
+      decoder_empty_sen = [data_ops.PAD_ID] * self.num_decoder_word
 
-      for i, decoder_sen in enumerate(list(doc)):
-        if i == 0:
-          decoder_pad = [data_ops.PAD_ID] * (self.num_decoder_word - len(decoder_sen) - 2)
-          decoder_doc.append(list(decoder_sen) + [data_ops.GO_ID] + [data_ops.EOS_ID] + decoder_pad)
-        elif i == len(decoder_sen)-1:
-          decoder_pad = [data_ops.PAD_ID] * (self.num_decoder_word - len(decoder_sen) - 2)
-          decoder_doc.append(list(decoder_sen) + [data_ops.EOS_ID] + [data_ops.EOD_ID] + decoder_pad)
-        else:
-          decoder_pad = [data_ops.PAD_ID] * (self.num_decoder_word - len(decoder_sen) - 1)
-          decoder_doc.append(list(decoder_sen) + [data_ops.EOS_ID] + decoder_pad)
+      for idx, doc in enumerate(decoder_inputs_raw):
+        decoder_doc = []
+        num_decoder_raw_sen = len(doc)
+        num_decoder_pad = self.num_decoder_sen - num_decoder_raw_sen
 
-      for _ in range(num_decoder_pad):
-        decoder_doc.append(decoder_empty_sen)
-        
-      decoder_inputs.append(decoder_doc)
+        for i, decoder_sen in enumerate(list(doc)):
+          print(decoder_sen)
+          if i == 0:
+            decoder_pad = [data_ops.PAD_ID] * (self.num_decoder_word - len(decoder_sen) - 2)
+            decoder_doc.append(list(decoder_sen) + [data_ops.GO_ID] + [data_ops.EOS_ID] + decoder_pad)
+          elif i == len(decoder_sen)-1:
+            decoder_pad = [data_ops.PAD_ID] * (self.num_decoder_word - len(decoder_sen) - 2)
+            decoder_doc.append(list(decoder_sen) + [data_ops.EOS_ID] + [data_ops.EOD_ID] + decoder_pad)
+          else:
+            decoder_pad = [data_ops.PAD_ID] * (self.num_decoder_word - len(decoder_sen) - 1)
+            decoder_doc.append(list(decoder_sen) + [data_ops.EOS_ID] + decoder_pad)
+
+        for _ in range(num_decoder_pad):
+          decoder_doc.append(decoder_empty_sen)
+
+        decoder_inputs.append(decoder_doc)
 
     # Create batch-major vectors from the data selected above.
     batch_encoder_inputs, batch_decoder_inputs, batch_weights  = [], [], []
@@ -255,13 +260,13 @@ class HS2S(object):
       weight_idx = 0
       doc_weights = np.ones(self.decoder_size, dtype=np.float32)
       flat_doc = [w for s in doc for w in s]
-      for length_idx in range(self.num_decoder_sen):
-        for word_idx in range(self.num_decoder_word):
+      for length_idx in range(self.decoder_h2):
+        for word_idx in range(self.decoder_h1):
           # if PAD then weight is 0
           # The corresponding target is decoder_input shifted by 1 forward.
-          if length_idx < self.num_decoder_sen-1:
+          if length_idx < self.decoder_h2-1:
             target = doc[length_idx+1][word_idx]
-          if length_idx == self.num_decoder_sen-1 or target == data_ops.PAD_ID:
+          if length_idx == self.decoder_h2-1 or target == data_ops.PAD_ID:
             doc_weights[weight_idx] = 0.0
           weight_idx += 1
       batch_weights.append(doc_weights)
